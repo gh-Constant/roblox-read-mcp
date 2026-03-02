@@ -19,6 +19,9 @@ BridgeClient.__index = BridgeClient
 
 local PROTOCOL_VERSION = 1
 local MAX_PAYLOAD_BYTES = 128 * 1024
+local DEFAULT_PORT = 3812
+local DEFAULT_PORT_RANGE = "3812-3830"
+local MAX_SCAN_PORTS = 128
 
 local ALLOWED_COMMANDS = {
 	search = true,
@@ -91,6 +94,116 @@ local function safeDisconnect(connection)
 	end
 end
 
+local function normalizePort(value: any): number?
+	local numeric = tonumber(value)
+	if numeric == nil then
+		return nil
+	end
+
+	local port = math.floor(numeric)
+	if port < 1 or port > 65535 then
+		return nil
+	end
+	return port
+end
+
+local function parsePortRange(value: any): (number?, number?)
+	if type(value) == "table" then
+		local startPort = normalizePort(value.start or value.min)
+		local endPort = normalizePort(value.finish or value["end"] or value.max)
+		if startPort and endPort then
+			if startPort > endPort then
+				startPort, endPort = endPort, startPort
+			end
+			return startPort, endPort
+		end
+		return nil, nil
+	end
+
+	if type(value) ~= "string" then
+		return nil, nil
+	end
+
+	local normalized = string.gsub(value, "%s+", "")
+	if normalized == "" then
+		return nil, nil
+	end
+
+	local single = normalizePort(normalized)
+	if single then
+		return single, single
+	end
+
+	local startRaw, endRaw = string.match(normalized, "^(%d+)%-(%d+)$")
+	if startRaw == nil then
+		startRaw, endRaw = string.match(normalized, "^(%d+)%.%.(%d+)$")
+	end
+	if startRaw == nil then
+		return nil, nil
+	end
+
+	local startPort = normalizePort(startRaw)
+	local endPort = normalizePort(endRaw)
+	if startPort == nil or endPort == nil then
+		return nil, nil
+	end
+	if startPort > endPort then
+		startPort, endPort = endPort, startPort
+	end
+	return startPort, endPort
+end
+
+local function buildPortCandidates(preferredPort: number, rangeValue: any): { number }
+	local ports = {}
+	local seen = {}
+
+	local function addPort(port: number?)
+		if port == nil or seen[port] then
+			return
+		end
+		seen[port] = true
+		table.insert(ports, port)
+	end
+
+	addPort(normalizePort(preferredPort) or DEFAULT_PORT)
+
+	local startPort, endPort = parsePortRange(rangeValue)
+	if startPort and endPort then
+		local scanned = 0
+		for port = startPort, endPort do
+			addPort(port)
+			scanned += 1
+			if scanned >= MAX_SCAN_PORTS then
+				break
+			end
+		end
+	end
+
+	if #ports == 0 then
+		table.insert(ports, DEFAULT_PORT)
+	end
+
+	return ports
+end
+
+local function portCandidateLabel(ports: { number }): string
+	if #ports == 0 then
+		return tostring(DEFAULT_PORT)
+	end
+	if #ports == 1 then
+		return tostring(ports[1])
+	end
+
+	local minPort = ports[1]
+	local maxPort = ports[1]
+	for index = 2, #ports do
+		local port = ports[index]
+		minPort = math.min(minPort, port)
+		maxPort = math.max(maxPort, port)
+	end
+	return string.format("%d-%d (%d ports)", minPort, maxPort, #ports)
+end
+
 function BridgeClient.new(options)
 	local self = setmetatable({}, BridgeClient)
 	self._options = options
@@ -101,6 +214,7 @@ function BridgeClient.new(options)
 	self._maxReconnectDelay = 10
 	self._connections = {}
 	self._lastStatus = "disconnected"
+	self._connectedUrl = nil
 	return self
 end
 
@@ -142,21 +256,40 @@ end
 function BridgeClient:_connectLoop()
 	while self._running and self._ws == nil do
 		local host = tostring(self._options.getHost())
-		local port = tonumber(self._options.getPort()) or 3812
-		local url = string.format("ws://%s:%d", host, port)
-
-		self:_setStatus("connecting", "Connecting to " .. url)
-		local ok, wsOrError = self:_createSocket(url)
-
-		if ok then
-			self._ws = wsOrError
-			self:_bindWebSocketSignals(wsOrError)
-			self:_setStatus("connected_socket", "Socket created. Waiting for open/auth challenge")
-			self._reconnectDelay = 1
-			return
+		local preferredPort = tonumber(self._options.getPort()) or DEFAULT_PORT
+		local rangeSetting = DEFAULT_PORT_RANGE
+		if self._options.getPortRange then
+			local rangeOk, rangeOrError = pcall(function()
+				return self._options.getPortRange()
+			end)
+			if rangeOk then
+				rangeSetting = rangeOrError
+			end
 		end
 
-		self:_setStatus("connect_error", "Connection failed: " .. tostring(wsOrError))
+		local candidates = buildPortCandidates(preferredPort, rangeSetting)
+		local candidateLabel = portCandidateLabel(candidates)
+		local lastError = "unknown"
+
+		self:_setStatus("connecting", string.format("Scanning ws://%s ports %s", host, candidateLabel))
+		for _, port in ipairs(candidates) do
+			local url = string.format("ws://%s:%d", host, port)
+			local ok, wsOrError = self:_createSocket(url)
+			if ok then
+				self._ws = wsOrError
+				self._connectedUrl = url
+				self:_bindWebSocketSignals(wsOrError)
+				self:_setStatus("connected_socket", "Socket created on " .. url .. ". Waiting for open/auth challenge")
+				self._reconnectDelay = 1
+				return
+			end
+			lastError = tostring(wsOrError)
+		end
+
+		self:_setStatus(
+			"connect_error",
+			string.format("No bridge found on ws://%s ports %s. Last error: %s", host, candidateLabel, lastError)
+		)
 		task.wait(self._reconnectDelay)
 		self._reconnectDelay = math.min(self._reconnectDelay * 2, self._maxReconnectDelay)
 	end
@@ -226,11 +359,23 @@ function BridgeClient:_bindWebSocketSignals(ws)
 	end
 
 	local openedConnection = connectSignalIfExists(ws, "Opened", function()
-		self:_setStatus("connected_socket", "Socket open. Waiting for auth challenge")
+		local detail = "Socket open. Waiting for auth challenge"
+		if self._connectedUrl then
+			detail = "Socket open on " .. self._connectedUrl .. ". Waiting for auth challenge"
+		end
+		self:_setStatus("connected_socket", detail)
 	end) or connectSignalIfExists(ws, "Open", function()
-		self:_setStatus("connected_socket", "Socket open. Waiting for auth challenge")
+		local detail = "Socket open. Waiting for auth challenge"
+		if self._connectedUrl then
+			detail = "Socket open on " .. self._connectedUrl .. ". Waiting for auth challenge"
+		end
+		self:_setStatus("connected_socket", detail)
 	end) or connectSignalIfExists(ws, "OnOpen", function()
-		self:_setStatus("connected_socket", "Socket open. Waiting for auth challenge")
+		local detail = "Socket open. Waiting for auth challenge"
+		if self._connectedUrl then
+			detail = "Socket open on " .. self._connectedUrl .. ". Waiting for auth challenge"
+		end
+		self:_setStatus("connected_socket", detail)
 	end)
 	if openedConnection then
 		table.insert(self._connections, openedConnection)
@@ -281,6 +426,7 @@ function BridgeClient:_closeSocket()
 		end
 	end
 	self._ws = nil
+	self._connectedUrl = nil
 end
 
 function BridgeClient:_onMessage(rawMessage: string)
@@ -386,7 +532,11 @@ function BridgeClient:_handleAuthOk(envelope: { [string]: any })
 	end
 
 	self._sessionToken = token
-	self:_setStatus("ready", "Authenticated and ready")
+	local detail = "Authenticated and ready"
+	if self._connectedUrl then
+		detail = "Authenticated and ready on " .. self._connectedUrl
+	end
+	self:_setStatus("ready", detail)
 end
 
 function BridgeClient:_handleCommand(envelope: { [string]: any })

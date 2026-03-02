@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    io,
     net::{IpAddr, SocketAddr},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -59,11 +60,9 @@ struct ActiveSession {
 
 impl WsBridge {
     pub async fn bind(config: AppConfig) -> Result<Self> {
-        let listener = TcpListener::bind(config.ws_bind_addr())
-            .await
-            .map_err(|error| {
-                BridgeError::Config(format!("failed to bind websocket listener: {error}"))
-            })?;
+        let (listener, bound_port) = bind_listener(&config).await?;
+        let mut config = config;
+        config.ws_port = bound_port;
 
         let state = Arc::new(BridgeState {
             auth: AuthManager::new(&config.shared_secret, config.token_ttl),
@@ -151,6 +150,49 @@ impl WsBridge {
             }
         }
     }
+}
+
+async fn bind_listener(config: &AppConfig) -> Result<(TcpListener, u16)> {
+    let mut last_error: Option<(u16, io::Error)> = None;
+
+    for port in config.ws_candidate_ports() {
+        let bind_addr = format!("{}:{}", config.bind_host, port);
+        match TcpListener::bind(&bind_addr).await {
+            Ok(listener) => {
+                if config.ws_port_range.is_some() {
+                    info!("websocket bridge selected port {}", bind_addr);
+                }
+                return Ok((listener, port));
+            }
+            Err(error) => {
+                debug!(
+                    "failed to bind websocket listener on {}: {}",
+                    bind_addr, error
+                );
+                last_error = Some((port, error));
+            }
+        }
+    }
+
+    if let Some((start, end)) = config.ws_port_range {
+        let detail = last_error
+            .as_ref()
+            .map(|(port, error)| format!("last error on {}:{}: {}", config.bind_host, port, error))
+            .unwrap_or_else(|| "no bind attempts were made".to_string());
+        return Err(BridgeError::Config(format!(
+            "failed to bind websocket listener in range {}:{}-{} ({})",
+            config.bind_host, start, end, detail
+        )));
+    }
+
+    let detail = last_error
+        .as_ref()
+        .map(|(_, error)| error.to_string())
+        .unwrap_or_else(|| "no bind attempts were made".to_string());
+    Err(BridgeError::Config(format!(
+        "failed to bind websocket listener: {}",
+        detail
+    )))
 }
 
 async fn run_accept_loop(listener: TcpListener, state: Arc<BridgeState>) -> Result<()> {

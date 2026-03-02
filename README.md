@@ -1,129 +1,108 @@
 # Roblox Read MCP (Rust + Studio Plugin)
 
-Secure, read-only bridge between Roblox Studio and an MCP client.
+Secure, read-only bridge between Roblox Studio and any MCP client (Codex, Claude Code, AntiGravity, etc.).
 
 ## Architecture
 
 ```text
-MCP Client (Codex/Claude)
-        |
-      stdio
-        |
-Rust MCP server (tools + cursor signing + auth)
-        |
-  localhost websocket (127.0.0.1:3812)
-        |
-Roblox Studio plugin (read-only DataModel inspector)
+MCP Client
+   |
+ stdio
+   |
+roblox-read-mcp (Rust)
+   |
+ws://127.0.0.1:3812
+   |
+Roblox Studio Local Plugin
 ```
 
-## What it supports
+## Quick install (recommended)
 
-- `search_instances`
-- `get_instance_tree`
-- `get_selected`
-- `inspect_instance`
+From this folder:
 
-All responses are structured JSON, bounded, and paginated.
+```bash
+cd /Users/constantsuchet/Documents/Travail/Roblox/EscapeObbyForBrainrots/repo/tools/roblox-read-mcp
+./scripts/install-mcp.sh
+```
 
-## Security model
+What this does:
 
-- WebSocket listener binds to `127.0.0.1` by default.
-- One active Studio plugin session at a time.
-- Challenge-response authentication using `HMAC-SHA256`.
-- Short-lived session token required on command responses.
-- Strict read-only command whitelist (`search`, `tree`, `selected`, `inspect`, `ping`).
-- Cursor tokens are signed and expiry-bound (tamper resistant).
-- Hard caps for depth, nodes, payload size, and timeout.
-- No server logs to stdout (stdio-safe for MCP).
+- builds release binary
+- installs `roblox-read-mcp` to `~/.local/bin` (or `MCP_INSTALL_DIR` if set)
+- prints a ready-to-paste MCP config using `"command": "roblox-read-mcp"`
 
-## Plugin UI
+If `~/.local/bin` is not in your PATH, add this to your shell profile:
 
-The plugin includes:
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
 
-- live connection/auth badge
-- pairing panel (host/port, fixed built-in secret)
-- universal runtime defaults (AI controls query options per request)
-- telemetry cards (request count, latency, result count, index size)
+## Universal MCP config (no absolute path)
 
-## Build
+Use this server block in your MCP client config:
 
-### 1) Build plugin artifact
+```json
+{
+  "mcpServers": {
+    "roblox-read-mcp": {
+      "command": "roblox-read-mcp",
+      "args": ["--stdio", "--bind-host", "127.0.0.1", "--ws-port", "3812", "--ws-port-range", "3812-3830"]
+    }
+  }
+}
+```
+
+This works for any MCP client that supports stdio transport.
+
+## Client notes
+
+- Codex: add the block to your MCP servers config.
+- Claude Code: add the same block to its MCP servers config.
+- AntiGravity: `Manage MCP Servers` -> raw config -> paste the same block.
+
+## Build and install plugin
 
 ```bash
 cd /Users/constantsuchet/Documents/Travail/Roblox/EscapeObbyForBrainrots/repo/tools/roblox-read-mcp
 ./scripts/build-plugin.sh
 ```
 
-Output:
+Then in Roblox Studio:
 
-- `/Users/constantsuchet/Documents/Travail/Roblox/EscapeObbyForBrainrots/repo/tools/roblox-read-mcp/dist/roblox-read-mcp-plugin.rbxmx`
+1. Import `dist/roblox-read-mcp-plugin.rbxmx`
+2. Save it as a Local Plugin
+3. Open plugin UI and set:
+   - Host: `127.0.0.1`
+   - Port: `3812`
+   - Port Range Scan: `3812-3830`
+4. Click `Save + Reconnect`
+5. Wait for `READY`
 
-Import this model into Roblox Studio and save as a Local Plugin.
+## Tools exposed
 
-### 2) Start MCP server
+- `search_instances`
+- `get_instance_tree`
+- `get_selected`
+- `inspect_instance`
 
-```bash
-cd /Users/constantsuchet/Documents/Travail/Roblox/EscapeObbyForBrainrots/repo/tools/roblox-read-mcp
-cargo run --release
-```
+## Troubleshooting
 
-Optional flags:
+- `Address already in use (os error 48)`:
+  - another process is already using `--ws-port`
+  - use `--ws-port-range` so the bridge auto-selects the first available port
+  - set the same scan range in the plugin UI (`Port Range Scan`) so it can auto-find the selected port
 
-- `--bind-host 127.0.0.1`
-- `--ws-port 3812`
-- `--default-tool-timeout-ms 6000`
-- `--max-ws-message-bytes 131072`
+- `calling initialize: invalid character 'C'`:
+  - fixed in current codebase
+  - update/reinstall the binary and restart your MCP client
 
-### 3) Pair plugin with server
+- Plugin never reaches `READY`:
+  - ensure Studio has `Allow HTTP Requests`
+  - confirm host/port match server args
 
-- open plugin UI in Studio
-- set host/port to match server
-- click `Save + Reconnect`
-- wait for `READY` badge
+## Optional: run as always-on daemon (macOS)
 
-## Tool contracts
-
-### `search_instances`
-
-Arguments:
-
-- `query: string`
-- `cursor: string | null`
-- `options`: profile + filters + limits
-
-Returns:
-
-- `results: []`
-- `nextCursor: string | null`
-- `meta`
-
-### `get_instance_tree`
-
-Arguments:
-
-- `path: string | null`
-- `cursor: string | null`
-- `options`
-
-Returns paginated flattened subtree rows with `depth` and `childCount`.
-
-### `get_selected`
-
-Arguments:
-
-- `cursor: string | null`
-- `options`
-
-Returns current Studio selection.
-
-### `inspect_instance`
-
-Arguments:
-
-- `path: string` (required)
-- `options`
-
-Returns detailed snapshot of one instance and child preview.
+If you want a login-start daemon, use a LaunchAgent. Avoid running both daemon and MCP-client-managed process on the same port at the same time.
 
 ## Testing
 
@@ -133,26 +112,3 @@ cargo test
 ./scripts/check-luau-contracts.sh
 ./scripts/build-plugin.sh
 ```
-
-If your environment cannot access `crates.io`, `cargo` commands will fail until registry access is available.
-
-## Operational limits
-
-Defaults and hard caps are enforced in Rust and plugin logic:
-
-- depth: max `12`
-- page nodes: max `500`
-- include props: max `32`
-- timeout: max `15000ms`
-- websocket payload: max `128KB`
-
-## Troubleshooting
-
-- `READY` never appears:
-  - verify Studio `Allow HTTP Requests` is enabled.
-  - verify host/port match server.
-- Frequent disconnects:
-  - check port conflicts on `3812`.
-  - lower query size and maxNodes.
-- `invalid cursor` errors:
-  - cursor expired or was reused with different query/options.

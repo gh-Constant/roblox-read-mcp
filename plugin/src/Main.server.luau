@@ -36,6 +36,7 @@ end
 local initialSettings = {
 	host = safeGetSetting("roblox_read_mcp_host", "127.0.0.1"),
 	port = safeGetSetting("roblox_read_mcp_port", 3812),
+	portRange = safeGetSetting("roblox_read_mcp_port_range", "3812-3830"),
 	secret = HARDCODED_SHARED_SECRET,
 }
 
@@ -48,6 +49,9 @@ local bridge = BridgeClient.new({
 	end,
 	getPort = function()
 		return ui:getPort()
+	end,
+	getPortRange = function()
+		return ui:getPortRange()
 	end,
 	getSecret = function()
 		return ui:getSecret()
@@ -75,6 +79,7 @@ ui:setCallbacks({
 	saveSettings = function(newSettings)
 		safeSetSetting("roblox_read_mcp_host", newSettings.host)
 		safeSetSetting("roblox_read_mcp_port", newSettings.port)
+		safeSetSetting("roblox_read_mcp_port_range", newSettings.portRange)
 	end,
 	reconnect = function(force)
 		bridge:reconnect(force)

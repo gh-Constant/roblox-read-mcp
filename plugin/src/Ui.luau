@@ -233,7 +233,7 @@ function Ui.new(plugin: Plugin, initialSettings)
 
 	local homeCard = Instance.new("Frame")
 	homeCard.Position = UDim2.fromOffset(0, 18)
-	homeCard.Size = UDim2.new(1, 0, 0, 170)
+	homeCard.Size = UDim2.new(1, 0, 0, 222)
 	homeCard.BackgroundColor3 = THEME.panel
 	homeCard.BorderSizePixel = 0
 	applyCorner(homeCard, 10)
@@ -268,6 +268,9 @@ function Ui.new(plugin: Plugin, initialSettings)
 	self._hostInput.Size = UDim2.new(0.7, -4, 1, 0)
 	self._portInput = createInput(endpointRow, "3812", tostring(initialSettings.port or "3812"))
 	self._portInput.Size = UDim2.new(0.3, -4, 1, 0)
+
+	createLabel(homeCard, "Port Range Scan", 12, THEME.subText, false)
+	self._portRangeInput = createInput(homeCard, "3812-3830", tostring(initialSettings.portRange or "3812-3830"))
 
 	self._statusDetails = createLabel(homeCard, "Bridge disconnected", 11, THEME.subText, false)
 	self._statusDetails.Size = UDim2.new(1, 0, 0, 18)
@@ -468,6 +471,12 @@ function Ui:getPort(): number
 	return tonumber(self._portInput.Text) or 3812
 end
 
+function Ui:getPortRange(): string
+	local raw = self._portRangeInput and self._portRangeInput.Text or ""
+	raw = string.gsub(raw, "%s+", "")
+	return raw ~= "" and raw or "3812-3830"
+end
+
 function Ui:getSecret(): string
 	return HARDCODED_SHARED_SECRET
 end
@@ -488,6 +497,7 @@ function Ui:getSettingsSnapshot()
 	local runtime = self:getRuntimeOptions()
 	runtime.host = self:getHost()
 	runtime.port = self:getPort()
+	runtime.portRange = self:getPortRange()
 	runtime.secret = self:getSecret()
 	return runtime
 end

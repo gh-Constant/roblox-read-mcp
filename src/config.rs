@@ -16,6 +16,7 @@ pub const HARDCODED_SHARED_SECRET: &str = "roblox-read-mcp-global-shared-secret-
 pub struct AppConfig {
     pub bind_host: String,
     pub ws_port: u16,
+    pub ws_port_range: Option<(u16, u16)>,
     pub shared_secret: String,
     pub token_ttl: Duration,
     pub cursor_ttl: Duration,
@@ -45,6 +46,9 @@ struct Cli {
     #[arg(long, default_value_t = 3812)]
     ws_port: u16,
 
+    #[arg(long)]
+    ws_port_range: Option<String>,
+
     #[arg(long, default_value_t = 5 * 60 * 1_000)]
     token_ttl_ms: u64,
 
@@ -71,6 +75,7 @@ impl AppConfig {
     pub fn load() -> Result<Self> {
         let cli = Cli::parse();
         let secret = HARDCODED_SHARED_SECRET.to_string();
+        let ws_port_range = parse_port_range(cli.ws_port_range.as_deref())?;
 
         if secret.len() < 16 {
             return Err(BridgeError::Config(
@@ -93,6 +98,7 @@ impl AppConfig {
         Ok(Self {
             bind_host: cli.bind_host,
             ws_port: cli.ws_port,
+            ws_port_range,
             shared_secret: secret,
             token_ttl: Duration::from_millis(cli.token_ttl_ms.max(5_000)),
             cursor_ttl: Duration::from_millis(cli.cursor_ttl_ms.max(60_000)),
@@ -112,11 +118,71 @@ impl AppConfig {
     pub fn ws_bind_addr(&self) -> String {
         format!("{}:{}", self.bind_host, self.ws_port)
     }
+
+    pub fn ws_bind_hint(&self) -> String {
+        if let Some((start, end)) = self.ws_port_range {
+            format!("{}:{}-{}", self.bind_host, start, end)
+        } else {
+            self.ws_bind_addr()
+        }
+    }
+
+    pub fn ws_candidate_ports(&self) -> Vec<u16> {
+        if let Some((start, end)) = self.ws_port_range {
+            let mut ports = Vec::with_capacity((end - start + 1) as usize + 1);
+            ports.push(self.ws_port);
+            for port in start..=end {
+                if port != self.ws_port {
+                    ports.push(port);
+                }
+            }
+            return ports;
+        }
+        vec![self.ws_port]
+    }
+}
+
+fn parse_port_range(raw: Option<&str>) -> Result<Option<(u16, u16)>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+
+    let normalized = raw.trim().replace(' ', "");
+    if normalized.is_empty() {
+        return Ok(None);
+    }
+
+    let (start_raw, end_raw) = normalized
+        .split_once('-')
+        .ok_or_else(|| BridgeError::Config("ws port range must be START-END".to_string()))?;
+
+    let start = start_raw.parse::<u16>().map_err(|_| {
+        BridgeError::Config(
+            "ws port range start must be an integer between 1 and 65535".to_string(),
+        )
+    })?;
+    let end = end_raw.parse::<u16>().map_err(|_| {
+        BridgeError::Config("ws port range end must be an integer between 1 and 65535".to_string())
+    })?;
+
+    if start == 0 || end == 0 {
+        return Err(BridgeError::Config(
+            "ws port range values must be greater than zero".to_string(),
+        ));
+    }
+
+    if start > end {
+        return Err(BridgeError::Config(
+            "ws port range start must be <= end".to_string(),
+        ));
+    }
+
+    Ok(Some((start, end)))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Cli;
+    use super::{parse_port_range, Cli};
     use clap::Parser;
 
     #[test]
@@ -129,5 +195,24 @@ mod tests {
     fn cli_accepts_transport_flag() {
         let parsed = Cli::try_parse_from(["roblox-read-mcp", "--transport", "stdio"]);
         assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn parse_port_range_accepts_valid_input() {
+        assert_eq!(
+            parse_port_range(Some("3812-3830")).unwrap(),
+            Some((3812, 3830))
+        );
+        assert_eq!(
+            parse_port_range(Some(" 4000 - 4002 ")).unwrap(),
+            Some((4000, 4002))
+        );
+    }
+
+    #[test]
+    fn parse_port_range_rejects_invalid_input() {
+        assert!(parse_port_range(Some("3812")).is_err());
+        assert!(parse_port_range(Some("4002-4000")).is_err());
+        assert!(parse_port_range(Some("abc-def")).is_err());
     }
 }

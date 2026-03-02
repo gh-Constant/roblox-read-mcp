@@ -1,4 +1,4 @@
-    use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
@@ -392,6 +392,7 @@ mod tests {
         let config = AppConfig {
             bind_host: "127.0.0.1".to_string(),
             ws_port: 3812,
+            ws_port_range: None,
             shared_secret: "abcdefghijklmnopqrstuvwxyz".to_string(),
             token_ttl: std::time::Duration::from_secs(60),
             cursor_ttl: std::time::Duration::from_secs(60),

@@ -26,7 +26,7 @@ async fn run() -> Result<()> {
     let config = AppConfig::load()?;
     info!(
         "starting roblox-read-mcp (ws={} tool_timeout_ms={})",
-        config.ws_bind_addr(),
+        config.ws_bind_hint(),
         config.default_tool_timeout.as_millis()
     );
 
