@@ -1,0 +1,5 @@
+/target
+/dist/*.rbxm
+/dist/*.rbxmx
+/dist/*.rbxl
+/dist/*.rbxlx
