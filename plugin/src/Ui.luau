@@ -144,8 +144,8 @@ function Ui.new(plugin: Plugin, initialSettings)
 
 	local widgetInfo = DockWidgetPluginGuiInfo.new(
 		Enum.InitialDockState.Left,
-		true,
-		true,
+		false,
+		false,
 		390,
 		620,
 		340,
@@ -183,19 +183,19 @@ function Ui.new(plugin: Plugin, initialSettings)
 	header.Parent = root
 
 	local logo = Instance.new("ImageLabel")
-	logo.Size = UDim2.fromOffset(36, 36)
+	logo.Size = UDim2.fromOffset(72, 32)
 	logo.Position = UDim2.fromOffset(0, 6)
 	logo.BackgroundTransparency = 1
 	logo.Image = "rbxassetid://140668545844459"
 	logo.Parent = header
 
 	local title = createLabel(header, "RbxMCP", 24, THEME.text, true)
-	title.Position = UDim2.fromOffset(48, 4)
-	title.Size = UDim2.new(1, -140, 0, 28)
+	title.Position = UDim2.fromOffset(82, 4)
+	title.Size = UDim2.new(1, -174, 0, 28)
 
 	local version = createLabel(header, "v1.0.0", 12, THEME.subText, false)
-	version.Position = UDim2.fromOffset(48, 32)
-	version.Size = UDim2.new(1, -140, 0, 18)
+	version.Position = UDim2.fromOffset(82, 32)
+	version.Size = UDim2.new(1, -174, 0, 18)
 
 	local statusBadge = Instance.new("TextLabel")
 	statusBadge.AnchorPoint = Vector2.new(1, 0)
